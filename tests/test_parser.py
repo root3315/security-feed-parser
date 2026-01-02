@@ -3,6 +3,7 @@ Tests for security feed parser.
 """
 
 import json
+import time
 import unittest
 from datetime import datetime, timedelta
 
@@ -22,6 +23,7 @@ from parser import (
     parse_json_feed,
     detect_severity_from_content,
     validate_feed_url,
+    parse_multiple_feeds,
 )
 from utils import (
     filter_advisories,
@@ -30,6 +32,7 @@ from utils import (
     format_advisory_text,
     generate_summary,
     group_by_severity,
+    RateLimiter,
 )
 
 
@@ -552,6 +555,183 @@ class TestGrouping(unittest.TestCase):
         groups = group_by_severity(advisories)
         self.assertEqual(len(groups[Severity.HIGH]), 2)
         self.assertEqual(len(groups[Severity.MEDIUM]), 1)
+
+
+class TestRateLimiter(unittest.TestCase):
+    """Tests for rate limiting functionality."""
+
+    def test_rate_limiter_initialization(self):
+        limiter = RateLimiter(requests_per_second=1.0)
+        self.assertEqual(limiter.requests_per_second, 1.0)
+        self.assertEqual(limiter.request_count, 0)
+
+    def test_rate_limiter_invalid_rate(self):
+        with self.assertRaises(ValueError):
+            RateLimiter(requests_per_second=0)
+        with self.assertRaises(ValueError):
+            RateLimiter(requests_per_second=-1)
+
+    def test_rate_limiter_wait_no_delay(self):
+        limiter = RateLimiter(requests_per_second=10.0)
+        wait_time = limiter.wait()
+        self.assertEqual(wait_time, 0.0)
+        self.assertEqual(limiter.request_count, 1)
+
+    def test_rate_limiter_enforces_delay(self):
+        limiter = RateLimiter(requests_per_second=2.0)
+        limiter.wait()
+        limiter.wait()
+        wait_time = limiter.wait()
+        self.assertGreater(wait_time, 0)
+
+    def test_rate_limiter_reset(self):
+        limiter = RateLimiter(requests_per_second=1.0)
+        limiter.wait()
+        limiter.wait()
+        self.assertEqual(limiter.request_count, 2)
+        limiter.reset()
+        self.assertEqual(limiter.request_count, 0)
+
+    def test_rate_limiter_high_rate(self):
+        limiter = RateLimiter(requests_per_second=100.0)
+        for _ in range(10):
+            wait_time = limiter.wait()
+            self.assertLess(wait_time, 0.1)
+
+    def test_rate_limiter_low_rate(self):
+        limiter = RateLimiter(requests_per_second=0.5)
+        limiter.wait()
+        wait_time = limiter.wait()
+        self.assertGreater(wait_time, 1.5)
+
+
+class TestParseMultipleFeeds(unittest.TestCase):
+    """Tests for parsing multiple feeds."""
+
+    def test_parse_multiple_feeds_different_content(self):
+        rss_content_1 = """<?xml version="1.0"?>
+        <rss version="2.0">
+            <channel>
+                <title>Feed 1</title>
+                <item>
+                    <title>Item 1</title>
+                    <link>https://example.com/1</link>
+                </item>
+            </channel>
+        </rss>"""
+
+        rss_content_2 = """<?xml version="1.0"?>
+        <rss version="2.0">
+            <channel>
+                <title>Feed 2</title>
+                <item>
+                    <title>Item 2</title>
+                    <link>https://example.com/2</link>
+                </item>
+            </channel>
+        </rss>"""
+
+        json_content = json.dumps({
+            "title": "Feed 3",
+            "items": [
+                {"title": "Item 3", "url": "https://example.com/3"}
+            ]
+        })
+
+        results = parse_multiple_feeds(
+            sources=[rss_content_1, rss_content_2, json_content],
+            rate_limit=None,
+        )
+
+        self.assertEqual(len(results), 3)
+
+    def test_parse_multiple_feeds_with_rate_limit(self):
+        rss_content_1 = """<?xml version="1.0"?>
+        <rss version="2.0">
+            <channel>
+                <title>Feed 1</title>
+                <item>
+                    <title>Item 1</title>
+                    <link>https://example.com/1</link>
+                </item>
+            </channel>
+        </rss>"""
+
+        rss_content_2 = """<?xml version="1.0"?>
+        <rss version="2.0">
+            <channel>
+                <title>Feed 2</title>
+                <item>
+                    <title>Item 2</title>
+                    <link>https://example.com/2</link>
+                </item>
+            </channel>
+        </rss>"""
+
+        rss_content_3 = """<?xml version="1.0"?>
+        <rss version="2.0">
+            <channel>
+                <title>Feed 3</title>
+                <item>
+                    <title>Item 3</title>
+                    <link>https://example.com/3</link>
+                </item>
+            </channel>
+        </rss>"""
+
+        start_time = time.time()
+        results = parse_multiple_feeds(
+            sources=[rss_content_1, rss_content_2, rss_content_3],
+            rate_limit=10.0,
+        )
+        elapsed = time.time() - start_time
+
+        self.assertEqual(len(results), 3)
+        self.assertGreater(elapsed, 0.15)
+
+    def test_parse_multiple_feeds_no_rate_limit(self):
+        rss_content_1 = """<?xml version="1.0"?>
+        <rss version="2.0">
+            <channel>
+                <title>Feed 1</title>
+                <item>
+                    <title>Item 1</title>
+                    <link>https://example.com/1</link>
+                </item>
+            </channel>
+        </rss>"""
+
+        rss_content_2 = """<?xml version="1.0"?>
+        <rss version="2.0">
+            <channel>
+                <title>Feed 2</title>
+                <item>
+                    <title>Item 2</title>
+                    <link>https://example.com/2</link>
+                </item>
+            </channel>
+        </rss>"""
+
+        rss_content_3 = """<?xml version="1.0"?>
+        <rss version="2.0">
+            <channel>
+                <title>Feed 3</title>
+                <item>
+                    <title>Item 3</title>
+                    <link>https://example.com/3</link>
+                </item>
+            </channel>
+        </rss>"""
+
+        start_time = time.time()
+        results = parse_multiple_feeds(
+            sources=[rss_content_1, rss_content_2, rss_content_3],
+            rate_limit=None,
+        )
+        elapsed = time.time() - start_time
+
+        self.assertEqual(len(results), 3)
+        self.assertLess(elapsed, 0.05)
 
 
 if __name__ == "__main__":

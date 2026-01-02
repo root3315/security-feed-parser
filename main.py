@@ -29,6 +29,7 @@ from utils import (
 
 VERSION = "1.0.0"
 DEFAULT_USER_AGENT = "SecurityFeedParser/1.0"
+DEFAULT_RATE_LIMIT = 2.0
 
 
 def parse_severity(value: str) -> Severity:
@@ -49,6 +50,7 @@ Examples:
   %(prog)s https://feeds.example.com --json --output results.json
   %(prog)s -f local_feed.xml --search "CVE-2024" --cve-only
   %(prog)s --summary https://security.example.org/rss
+  %(prog)s https://feed1.com https://feed2.com --rate-limit 1
 
 Supported feed formats:
   - RSS 2.0
@@ -187,6 +189,14 @@ Supported feed formats:
     )
 
     parser.add_argument(
+        "--rate-limit",
+        type=float,
+        metavar="RPS",
+        default=DEFAULT_RATE_LIMIT,
+        help=f"Rate limit in requests per second (default: {DEFAULT_RATE_LIMIT}, use 0 to disable)",
+    )
+
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {VERSION}",
@@ -206,20 +216,34 @@ def process_feeds(
     files: Optional[List[str]] = None,
     timeout: int = 30,
     user_agent: Optional[str] = None,
+    rate_limit: Optional[float] = DEFAULT_RATE_LIMIT,
 ) -> List:
     """Process URLs and local files, returning list of ParseResult objects."""
     results = []
     user_agent = user_agent or DEFAULT_USER_AGENT
 
-    for url in urls:
-        if not validate_feed_url(url):
-            print(f"Warning: Invalid URL format: {url}", file=sys.stderr)
-            continue
+    if len(urls) > 1 and rate_limit is not None and rate_limit > 0:
+        rate_limiter_results = parse_multiple_feeds(
+            sources=urls,
+            timeout=timeout,
+            user_agent=user_agent,
+            rate_limit=rate_limit,
+        )
+        for url in urls:
+            result = rate_limiter_results.get(url)
+            if result and not result.success:
+                print(f"Error parsing {url}: {result.error}", file=sys.stderr)
+            results.append(result)
+    else:
+        for url in urls:
+            if not validate_feed_url(url):
+                print(f"Warning: Invalid URL format: {url}", file=sys.stderr)
+                continue
 
-        result = parse_feed(url, is_url=True, timeout=timeout, user_agent=user_agent)
-        if not result.success:
-            print(f"Error parsing {url}: {result.error}", file=sys.stderr)
-        results.append(result)
+            result = parse_feed(url, is_url=True, timeout=timeout, user_agent=user_agent)
+            if not result.success:
+                print(f"Error parsing {url}: {result.error}", file=sys.stderr)
+            results.append(result)
 
     if files:
         for filepath in files:
@@ -283,11 +307,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.print_help()
         return 1
 
+    rate_limit = args.rate_limit if args.rate_limit > 0 else None
+
     results = process_feeds(
         urls=args.urls,
         files=args.files,
         timeout=args.timeout,
         user_agent=args.user_agent,
+        rate_limit=rate_limit,
     )
 
     if not results:

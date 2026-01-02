@@ -5,6 +5,8 @@ Utility functions for filtering, sorting, and output formatting.
 import csv
 import io
 import json
+import time
+from collections import deque
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Callable
 
@@ -358,3 +360,67 @@ def get_top_cves(advisories: List[Advisory], limit: int = 10) -> List[tuple]:
 
     sorted_cves = sorted(cve_counts.items(), key=lambda x: x[1], reverse=True)
     return sorted_cves[:limit]
+
+
+class RateLimiter:
+    """
+    Rate limiter for controlling request frequency.
+
+    Implements a sliding window rate limiting algorithm to ensure
+    requests don't exceed a specified rate (requests per second).
+    """
+
+    def __init__(self, requests_per_second: float = 1.0):
+        """
+        Initialize the rate limiter.
+
+        Args:
+            requests_per_second: Maximum number of requests allowed per second.
+                                Must be greater than 0.
+        """
+        if requests_per_second <= 0:
+            raise ValueError("requests_per_second must be greater than 0")
+
+        self.requests_per_second = requests_per_second
+        self.min_interval = 1.0 / requests_per_second
+        self._timestamps: deque = deque()
+        self._last_request_time: Optional[float] = None
+
+    def wait(self) -> float:
+        """
+        Wait if necessary to respect rate limit, then record the request.
+
+        Ensures minimum interval between consecutive requests.
+
+        Returns:
+            Time waited in seconds (0 if no wait was needed)
+        """
+        now = time.time()
+        wait_time = 0.0
+
+        if self._last_request_time is not None:
+            earliest_next = self._last_request_time + self.min_interval
+            wait_time = max(0, earliest_next - now)
+
+        if wait_time > 0:
+            time.sleep(wait_time)
+
+        actual_time = time.time()
+        self._last_request_time = actual_time
+        self._timestamps.append(actual_time)
+
+        window_size = max(self.requests_per_second * 2, 10)
+        while len(self._timestamps) > window_size:
+            self._timestamps.popleft()
+
+        return wait_time
+
+    def reset(self) -> None:
+        """Clear all recorded timestamps."""
+        self._timestamps.clear()
+        self._last_request_time = None
+
+    @property
+    def request_count(self) -> int:
+        """Return the number of tracked requests."""
+        return len(self._timestamps)

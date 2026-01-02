@@ -21,6 +21,7 @@ from models import (
     ParseResult,
     Severity,
 )
+from utils import RateLimiter
 
 
 CVE_PATTERN = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
@@ -391,11 +392,32 @@ def parse_multiple_feeds(
     sources: List[str],
     timeout: int = 30,
     user_agent: Optional[str] = None,
+    rate_limit: Optional[float] = None,
 ) -> Dict[str, ParseResult]:
-    """Parse multiple feeds and return results keyed by source."""
+    """
+    Parse multiple feeds and return results keyed by source.
+
+    Args:
+        sources: List of feed URLs to parse
+        timeout: Request timeout in seconds
+        user_agent: Custom User-Agent header
+        rate_limit: Maximum requests per second (None for no rate limiting)
+
+    Returns:
+        Dictionary mapping source URLs to their ParseResult objects
+    """
     results = {}
+    rate_limiter = None
+
+    if rate_limit is not None and rate_limit > 0:
+        rate_limiter = RateLimiter(requests_per_second=rate_limit)
+
     for source in sources:
+        if rate_limiter is not None:
+            rate_limiter.wait()
+
         results[source] = parse_feed(source, timeout=timeout, user_agent=user_agent)
+
     return results
 
 
